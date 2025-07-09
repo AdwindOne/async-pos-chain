@@ -22,7 +22,7 @@ impl AccountState {
         *to_balance += amount;
         true
     }
-
+    #[allow(dead_code)]
     pub fn show(&self) {
         println!("📊 账户余额：");
         for (k, v) in &self.balances {

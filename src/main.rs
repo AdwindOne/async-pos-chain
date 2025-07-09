@@ -6,9 +6,7 @@ mod storage;
 mod network;
 mod account;
 mod peers;
-use peers::PeerManager;
 use network::{broadcast_block, broadcast_transaction};
-use peers::PeerManager as PeerManagerTrait;
 
 use clap::{Parser, Subcommand};
 use blockchain::Blockchain;
@@ -17,10 +15,10 @@ use mempool::Mempool;
 use tokio::io::AsyncWriteExt;
 use storage::{get_block_by_index, init_db, save_block, init_account_table, add_account, get_balance, set_balance};
 use rusqlite::Connection;
-use rusqlite::params;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::io::AsyncReadExt;
+use peers::PeerManager;
 
 #[derive(Parser)]
 #[command(name = "PoS Chain")]
@@ -107,7 +105,7 @@ async fn main() {
             // 加载 peers
             let peer_conn = Connection::open("peers.db").unwrap();
             let peers = PeerManager::load_from_db(&peer_conn).unwrap_or_default();
-            let peers_arc = Arc::new(Mutex::new(peers));
+            let _peers_arc = Arc::new(Mutex::new(peers));
 
             // 从数据库恢复区块链
             let mut chain = Blockchain::new();
@@ -137,12 +135,12 @@ async fn main() {
             mempool.add(Transaction::new("Bob", "Charlie", 5), Some(&conn_arc.lock().unwrap()));
 
             let peers = PeerManager::default();
-            let peers_arc = Arc::new(Mutex::new(peers));
+            let _peers_arc = Arc::new(Mutex::new(peers));
 
             // 启动持续出块任务
             let chain_arc = Arc::new(Mutex::new(chain));
             let mempool_arc = Arc::new(Mutex::new(mempool));
-            let peers_for_task = Arc::clone(&peers_arc);
+            let peers_for_task = Arc::clone(&_peers_arc);
             let chain_for_task = Arc::clone(&chain_arc);
             let mempool_for_task = Arc::clone(&mempool_arc);
             let conn_for_task = Arc::clone(&conn_arc);
@@ -155,15 +153,12 @@ async fn main() {
                         let conn = conn_for_task.lock().unwrap();
                         mempool.collect_for_block(10, Some(&conn))
                     };
-                    let (block, chain_len, chain_state, chain_snapshot, proposer) = {
+                    let (block, proposer) = {
                         let mut chain = chain_for_task.lock().unwrap();
                         chain.add_block(txs.clone());
                         let block = chain.chain.last().unwrap().clone();
-                        let chain_len = chain.chain.len();
-                        let chain_state = chain.state.balances.clone();
-                        let chain_snapshot = chain.chain.clone();
                         let proposer = block.proposer.clone();
-                        (block, chain_len, chain_state, chain_snapshot, proposer)
+                        (block, proposer)
                     };
                     // 处理区块内所有交易的余额
                     {
@@ -228,7 +223,7 @@ async fn main() {
                                                     let from = params[0].as_str().unwrap_or("");
                                                     let to = params[1].as_str().unwrap_or("");
                                                     let amount = params[2].as_u64().unwrap_or(0);
-                                                    let tx = Transaction::new(from, to, amount);
+                                                    let _tx = Transaction::new(from, to, amount);
                                                     println!("[JSON-RPC] 交易提交: {} -> {} [{}]", from, to, amount);
                                                     // 计算交易hash
                                                     use sha2::{Sha256, Digest};
@@ -237,7 +232,7 @@ async fn main() {
                                                     hasher.update(tx_str.as_bytes());
                                                     let tx_hash = format!("0x{:x}", hasher.finalize());
                                                     // 直接插入 mempool
-                                                    mempool_for_rpc.lock().unwrap().add(tx, Some(&Connection::open("chain.db").unwrap()));
+                                                    mempool_for_rpc.lock().unwrap().add(_tx, Some(&Connection::open("chain.db").unwrap()));
                                                     let resp = json!({
                                                         "jsonrpc": "2.0",
                                                         "result": {"status": "ok", "tx_hash": tx_hash},
@@ -260,7 +255,7 @@ async fn main() {
                 }
             });
 
-            let peers_for_discover = Arc::clone(&peers_arc);
+            let peers_for_discover = Arc::clone(&_peers_arc);
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -352,7 +347,6 @@ async fn main() {
             use tokio::net::TcpListener;
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             use serde_json::json;
-            use std::net::SocketAddr;
             println!("🚀 启动 JSON-RPC 服务，监听端口 {}", port);
             let listener = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
             loop {
@@ -372,7 +366,7 @@ async fn main() {
                                                 let from = params[0].as_str().unwrap_or("");
                                                 let to = params[1].as_str().unwrap_or("");
                                                 let amount = params[2].as_u64().unwrap_or(0);
-                                                let tx = Transaction::new(from, to, amount);
+                                                let _tx = Transaction::new(from, to, amount);
                                                 // 这里直接打印，实际可插入 mempool 或广播
                                                 println!("[JSON-RPC] 交易提交: {} -> {} [{}]", from, to, amount);
                                                 let resp = json!({"jsonrpc":"2.0","result":"ok","id":req.get("id").cloned().unwrap_or(json!(1))});

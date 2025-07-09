@@ -115,6 +115,7 @@ pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Optio
     Ok(None)
 }
 
+#[allow(dead_code)]
 pub fn init_mempool_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mempool (

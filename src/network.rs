@@ -7,7 +7,6 @@ use serde_json;
 use crate::peers::PeerManager;
 use crate::transaction::Transaction;
 use crate::mempool::Mempool;
-use std::fs;
 use rusqlite::Connection;
 
 pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
@@ -84,7 +83,7 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
         });
     }
 }
-
+#[allow(dead_code)]
 pub async fn discover_peers(peers: &mut PeerManager) {
     let peer_list = peers.list();
     for addr in peer_list {
