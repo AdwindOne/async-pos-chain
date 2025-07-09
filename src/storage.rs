@@ -2,7 +2,6 @@
 use crate::block::Block;
 use crate::transaction::Transaction;
 use rocksdb::{DB, Options, IteratorMode};
-use serde::{Serialize, Deserialize};
 use std::sync::{Arc, Mutex};
 use bincode;
 
@@ -52,6 +51,7 @@ pub fn set_balance(db: &RocksDB, address: &str, balance: u64) {
 }
 
 // Transaction (for query by hash)
+#[allow(dead_code)]
 pub fn save_transaction(db: &RocksDB, tx_hash: &str, tx: &Transaction) {
     let key = format!("tx:{}", tx_hash);
     let value = bincode::serialize(tx).unwrap();
@@ -74,6 +74,7 @@ pub fn insert_mempool_tx(db: &RocksDB, tx_hash: &str, tx: &Transaction) {
     db.lock().unwrap().put(key.as_bytes(), &value).unwrap();
 }
 
+#[allow(dead_code)]
 pub fn remove_mempool_tx(db: &RocksDB, tx_hash: &str) {
     let key = format!("mempool:{}", tx_hash);
     db.lock().unwrap().delete(key.as_bytes()).unwrap();

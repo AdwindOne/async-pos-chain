@@ -57,6 +57,7 @@ impl Blockchain {
         self.chain.push(block);
     }
 
+    #[allow(dead_code)]
     pub fn print_chain(&self) {
         println!("📦 区块链结构：");
         for block in &self.chain {
@@ -67,6 +68,7 @@ impl Blockchain {
         }
     }
 
+    #[allow(dead_code)]
     pub fn into_arc(self) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(self))
     }

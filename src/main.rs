@@ -6,10 +6,8 @@ mod storage;
 mod network;
 mod account;
 mod peers;
-use peers::PeerManager;
 use network::{broadcast_block, broadcast_transaction};
-use peers::PeerManager as PeerManagerTrait;
-use crate::storage::RocksDB;
+use peers::PeerManager;
 
 use clap::{Parser, Subcommand};
 use blockchain::Blockchain;
@@ -131,7 +129,6 @@ async fn main() {
             let chain_for_task = Arc::clone(&chain_arc);
             let mempool_for_task = Arc::clone(&mempool_arc);
             let chain_db_for_task = Arc::clone(&chain_db);
-            let peers_db_for_task = Arc::clone(&peers_db);
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -315,13 +312,12 @@ async fn main() {
             use tokio::net::TcpListener;
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             use serde_json::json;
-            use std::net::SocketAddr;
             println!("🚀 启动 JSON-RPC 服务，监听端口 {}", port);
             let listener = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
             let chain_db = Arc::clone(&chain_db);
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let chain_db = Arc::clone(&chain_db);
+                let _chain_db = Arc::clone(&chain_db);
                 tokio::spawn(async move {
                     let mut buf = [0; 4096];
                     if let Ok(n) = socket.read(&mut buf).await {
@@ -336,7 +332,7 @@ async fn main() {
                                                 let from = params[0].as_str().unwrap_or("");
                                                 let to = params[1].as_str().unwrap_or("");
                                                 let amount = params[2].as_u64().unwrap_or(0);
-                                                let tx = Transaction::new(from, to, amount);
+                                                let _tx = Transaction::new(from, to, amount);
                                                 println!("[JSON-RPC] 交易提交: {} -> {} [{}]", from, to, amount);
                                                 let resp = json!({"jsonrpc":"2.0","result":"ok","id":req.get("id").cloned().unwrap_or(json!(1))});
                                                 let resp_str = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", resp.to_string().len(), resp.to_string());

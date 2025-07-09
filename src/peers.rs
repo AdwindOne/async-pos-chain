@@ -17,6 +17,7 @@ impl PeerManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove_peer(&mut self, addr: &str) {
         self.peers.retain(|p| p != addr);
     }

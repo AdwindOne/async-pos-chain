@@ -7,7 +7,6 @@ use serde_json;
 use crate::peers::PeerManager;
 use crate::transaction::Transaction;
 use crate::mempool::Mempool;
-use crate::storage::RocksDB;
 
 pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
     let data = serde_json::to_string(tx).unwrap();
@@ -82,6 +81,7 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
     }
 }
 
+#[allow(dead_code)]
 pub async fn discover_peers(peers: &mut PeerManager) {
     let peer_list = peers.peers.clone();
     for addr in peer_list {

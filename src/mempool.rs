@@ -19,6 +19,7 @@ impl Mempool {
         self.txs.push(tx);
     }
 
+    #[allow(dead_code)]
     pub fn remove(&mut self, tx: &Transaction, db: Option<&RocksDB>) {
         if let Some(db) = db {
             let tx_hash = tx.hash();
