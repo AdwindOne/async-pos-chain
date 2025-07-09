@@ -20,6 +20,7 @@ use rusqlite::Connection;
 use rusqlite::params;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tokio::io::AsyncReadExt;
 
 #[derive(Parser)]
 #[command(name = "PoS Chain")]
@@ -75,7 +76,8 @@ async fn main() {
             let tx = Transaction::new(&from, &to, amount);
             println!("💸 交易提交: {} -> {} [{}]", from, to, amount);
             // 读取 peers 列表，广播交易
-            let peers = PeerManager::default(); // TODO: 可从本地文件或网络获取
+            let peer_conn = Connection::open("peers.db").unwrap();
+            let peers = PeerManager::load_from_db(&peer_conn).unwrap_or_default();
             broadcast_transaction(&tx, &peers).await;
             // 假设本地节点监听 8000
             let addr = "127.0.0.1:8000";
@@ -83,7 +85,11 @@ async fn main() {
             if let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await {
                 let _ = stream.write_all(data.as_bytes()).await;
             }
-            // TODO: 本地 mempool 需持久化或通过本地 server 端口插入
+            // 本地 mempool 持久化
+            let conn = Connection::open("chain.db").unwrap();
+            let mut mempool = Mempool::default();
+            mempool.load_from_db(&conn);
+            mempool.add(tx, Some(&conn));
         }
 
         Commands::Run { port } => {
@@ -123,8 +129,12 @@ async fn main() {
             drop(conn);
 
             let mut mempool = Mempool::default();
-            mempool.add(Transaction::new("Alice", "Bob", 10));
-            mempool.add(Transaction::new("Bob", "Charlie", 5));
+            {
+                let conn = conn_arc.lock().unwrap();
+                mempool.load_from_db(&conn);
+            }
+            mempool.add(Transaction::new("Alice", "Bob", 10), Some(&conn_arc.lock().unwrap()));
+            mempool.add(Transaction::new("Bob", "Charlie", 5), Some(&conn_arc.lock().unwrap()));
 
             let peers = PeerManager::default();
             let peers_arc = Arc::new(Mutex::new(peers));
@@ -142,7 +152,8 @@ async fn main() {
                     // 每3秒都出块（即使没有交易）
                     let txs = {
                         let mut mempool = mempool_for_task.lock().unwrap();
-                        mempool.collect_for_block(10)
+                        let conn = conn_for_task.lock().unwrap();
+                        mempool.collect_for_block(10, Some(&conn))
                     };
                     let (block, chain_len, chain_state, chain_snapshot, proposer) = {
                         let mut chain = chain_for_task.lock().unwrap();
@@ -226,7 +237,7 @@ async fn main() {
                                                     hasher.update(tx_str.as_bytes());
                                                     let tx_hash = format!("0x{:x}", hasher.finalize());
                                                     // 直接插入 mempool
-                                                    mempool_for_rpc.lock().unwrap().add(tx);
+                                                    mempool_for_rpc.lock().unwrap().add(tx, Some(&Connection::open("chain.db").unwrap()));
                                                     let resp = json!({
                                                         "jsonrpc": "2.0",
                                                         "result": {"status": "ok", "tx_hash": tx_hash},
@@ -246,6 +257,57 @@ async fn main() {
                             }
                         }
                     });
+                }
+            });
+
+            let peers_for_discover = Arc::clone(&peers_arc);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    // 先 clone peers 列表
+                    let peer_list = {
+                        let peers = peers_for_discover.lock().unwrap();
+                        peers.list()
+                    };
+                    // 异步发现
+                    let mut discovered = PeerManager::default();
+                    for addr in peer_list {
+                        if let Ok(mut stream) = tokio::net::TcpStream::connect(&addr).await {
+                            let req = serde_json::json!({"type": "peers_request"});
+                            let _ = stream.write_all(serde_json::to_string(&req).unwrap().as_bytes()).await;
+                            let mut buf = [0; 2048];
+                            if let Ok(n) = stream.read(&mut buf).await {
+                                if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                                        if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
+                                            if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
+                                                for p in arr {
+                                                    if let Some(addr) = p.as_str() {
+                                                        discovered.add_peer(addr.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 合并新 peers
+                    let mut peers = peers_for_discover.lock().unwrap();
+                    let before = peers.list().len();
+                    for addr in discovered.list() {
+                        peers.add_peer(addr);
+                    }
+                    let after = peers.list().len();
+                    if after > before {
+                        println!("[发现节点] 新增 {} 个节点，当前已知节点总数: {}", after - before, after);
+                    } else {
+                        println!("[发现节点] 未发现新节点，当前已知节点总数: {}", after);
+                    }
+                    // 保存到 peers.db
+                    let peer_conn = rusqlite::Connection::open("peers.db").unwrap();
+                    let _ = peers.save_to_db(&peer_conn);
                 }
             });
 

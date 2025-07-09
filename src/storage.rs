@@ -114,3 +114,44 @@ pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Optio
     }
     Ok(None)
 }
+
+pub fn init_mempool_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mempool (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tx_json TEXT
+        );"
+    )
+}
+
+pub fn insert_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
+    let tx_json = serde_json::to_string(tx).unwrap();
+    conn.execute(
+        "INSERT INTO mempool (tx_json) VALUES (?1)",
+        (tx_json,),
+    )?;
+    Ok(())
+}
+
+pub fn remove_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
+    let tx_json = serde_json::to_string(tx).unwrap();
+    conn.execute(
+        "DELETE FROM mempool WHERE tx_json = ?1",
+        (tx_json,),
+    )?;
+    Ok(())
+}
+
+pub fn load_all_mempool_txs(conn: &Connection) -> Result<Vec<crate::transaction::Transaction>> {
+    let mut stmt = conn.prepare("SELECT tx_json FROM mempool")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut txs = Vec::new();
+    for row in rows {
+        if let Ok(json) = row {
+            if let Ok(tx) = serde_json::from_str(&json) {
+                txs.push(tx);
+            }
+        }
+    }
+    Ok(txs)
+}

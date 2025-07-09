@@ -7,6 +7,8 @@ use serde_json;
 use crate::peers::PeerManager;
 use crate::transaction::Transaction;
 use crate::mempool::Mempool;
+use std::fs;
+use rusqlite::Connection;
 
 pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
     let data = serde_json::to_string(tx).unwrap();
@@ -36,15 +38,40 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
         let (mut socket, _) = listener.accept().await.unwrap();
         let chain = Arc::clone(&chain);
         let mempool = Arc::clone(&mempool);
+        let peer_db_path = "peers.db".to_string();
 
         tokio::spawn(async move {
             let mut buf = [0; 1024];
             if let Ok(n) = socket.read(&mut buf).await {
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                    // 网络自动发现：peers_request/peers_response
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                        if val.get("type") == Some(&serde_json::Value::String("peers_request".to_string())) {
+                            // 返回本地 peers
+                            let peer_conn = Connection::open(&peer_db_path).unwrap();
+                            let peers = crate::peers::PeerManager::load_from_db(&peer_conn).unwrap_or_default();
+                            let resp = serde_json::json!({"type": "peers_response", "peers": peers.list()});
+                            let _ = socket.write_all(serde_json::to_string(&resp).unwrap().as_bytes()).await;
+                            return;
+                        }
+                        if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
+                            if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
+                                let peer_conn = Connection::open(&peer_db_path).unwrap();
+                                let mut peers = crate::peers::PeerManager::load_from_db(&peer_conn).unwrap_or_default();
+                                for p in arr {
+                                    if let Some(addr) = p.as_str() {
+                                        peers.add_peer(addr.to_string());
+                                    }
+                                }
+                                let _ = peers.save_to_db(&peer_conn);
+                            }
+                            return;
+                        }
+                    }
                     // 先尝试解析为 Transaction
                     if let Ok(tx) = serde_json::from_str::<Transaction>(text) {
                         println!("📥 接收到交易: {} -> {} [{}]", tx.from, tx.to, tx.amount);
-                        mempool.lock().unwrap().add(tx);
+                        mempool.lock().unwrap().add(tx, None);
                         return;
                     }
                     // 再尝试解析为 Block
@@ -55,5 +82,31 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
                 }
             }
         });
+    }
+}
+
+pub async fn discover_peers(peers: &mut PeerManager) {
+    let peer_list = peers.list();
+    for addr in peer_list {
+        if let Ok(mut stream) = TcpStream::connect(&addr).await {
+            let req = serde_json::json!({"type": "peers_request"});
+            let _ = stream.write_all(serde_json::to_string(&req).unwrap().as_bytes()).await;
+            let mut buf = [0; 2048];
+            if let Ok(n) = stream.read(&mut buf).await {
+                if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                        if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
+                            if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
+                                for p in arr {
+                                    if let Some(addr) = p.as_str() {
+                                        peers.add_peer(addr.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
