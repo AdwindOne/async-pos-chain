@@ -1,157 +1,114 @@
+// 依赖：请在 Cargo.toml 添加 rocksdb = "0.21"
 use crate::block::Block;
-use rusqlite::{Connection, Result};
-use rusqlite::params;
+use crate::transaction::Transaction;
+use rocksdb::{DB, Options, IteratorMode};
+use serde::{Serialize, Deserialize};
+use std::sync::{Arc, Mutex};
+use bincode;
 
-pub fn init_db(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS blocks (
-            id INTEGER PRIMARY KEY,
-            idx INTEGER,
-            hash TEXT,
-            prev_hash TEXT,
-            proposer TEXT,
-            timestamp INTEGER,
-            transactions TEXT
-        );
-        "
-    )
+pub type RocksDB = Arc<Mutex<DB>>;
+
+pub fn open_db(path: &str) -> RocksDB {
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    let db = DB::open(&opts, path).expect("Failed to open RocksDB");
+    Arc::new(Mutex::new(db))
 }
 
-pub fn save_block(conn: &Connection, block: &Block) -> Result<()> {
-    let tx_json = serde_json::to_string(&block.transactions).unwrap();
-    conn.execute(
-        "INSERT INTO blocks (idx, hash, prev_hash, proposer, timestamp, transactions) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        (
-            &block.index,
-            &block.hash,
-            &block.previous_hash,
-            &block.proposer,
-            &block.timestamp,
-            &tx_json,
-        ),
-    )?;
-    Ok(())
+// Block
+pub fn save_block(db: &RocksDB, block: &Block) {
+    let key = format!("block:{}", block.index);
+    let value = bincode::serialize(block).unwrap();
+    db.lock().unwrap().put(key.as_bytes(), &value).unwrap();
 }
 
-pub fn get_block_by_index(conn: &Connection, idx: u64) -> Result<Option<Block>> {
-    let mut stmt = conn.prepare("SELECT idx, hash, prev_hash, proposer, timestamp, transactions FROM blocks WHERE idx = ?1 LIMIT 1")?;
-    let mut rows = stmt.query(params![idx])?;
-    if let Some(row) = rows.next()? {
-        let index: u64 = row.get(0)?;
-        let hash: String = row.get(1)?;
-        let previous_hash: String = row.get(2)?;
-        let proposer: String = row.get(3)?;
-        let timestamp: u64 = row.get(4)?;
-        let tx_json: String = row.get(5)?;
-        let transactions: Vec<crate::transaction::Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
-        Ok(Some(Block {
-            index,
-            hash,
-            previous_hash,
-            proposer,
-            timestamp,
-            transactions,
-        }))
+pub fn get_block_by_index(db: &RocksDB, idx: u64) -> Option<Block> {
+    let key = format!("block:{}", idx);
+    if let Ok(Some(val)) = db.lock().unwrap().get(key.as_bytes()) {
+        bincode::deserialize(&val).ok()
     } else {
-        Ok(None)
+        None
     }
 }
 
-pub fn init_account_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS accounts (
-            address TEXT PRIMARY KEY,
-            balance INTEGER
-        );"
-    )
+// Account
+pub fn add_account(db: &RocksDB, address: &str, balance: u64) {
+    let key = format!("account:{}", address);
+    let value = bincode::serialize(&balance).unwrap();
+    db.lock().unwrap().put(key.as_bytes(), &value).unwrap();
 }
 
-pub fn add_account(conn: &Connection, address: &str, balance: u64) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO accounts (address, balance) VALUES (?1, ?2)",
-        (address, balance),
-    )?;
-    Ok(())
-}
-
-pub fn get_balance(conn: &Connection, address: &str) -> Result<u64> {
-    let mut stmt = conn.prepare("SELECT balance FROM accounts WHERE address = ?1")?;
-    let mut rows = stmt.query(params![address])?;
-    if let Some(row) = rows.next()? {
-        let balance: u64 = row.get(0)?;
-        Ok(balance)
+pub fn get_balance(db: &RocksDB, address: &str) -> u64 {
+    let key = format!("account:{}", address);
+    if let Ok(Some(val)) = db.lock().unwrap().get(key.as_bytes()) {
+        bincode::deserialize(&val).unwrap_or(0)
     } else {
-        Ok(0)
+        0
     }
 }
 
-pub fn set_balance(conn: &Connection, address: &str, balance: u64) -> Result<()> {
-    conn.execute(
-        "UPDATE accounts SET balance = ?1 WHERE address = ?2",
-        (balance, address),
-    )?;
-    Ok(())
+pub fn set_balance(db: &RocksDB, address: &str, balance: u64) {
+    add_account(db, address, balance);
 }
 
-pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Option<(u64, crate::transaction::Transaction)>> {
-    let mut stmt = conn.prepare("SELECT idx, transactions FROM blocks")?;
-    let mut rows = stmt.query([])?;
-    use sha2::{Sha256, Digest};
-    while let Some(row) = rows.next()? {
-        let idx: u64 = row.get(0)?;
-        let tx_json: String = row.get(1)?;
-        let txs: Vec<crate::transaction::Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
-        for tx in txs {
-            let tx_str = format!("{}{}{}", tx.from, tx.to, tx.amount);
-            let mut hasher = Sha256::new();
-            hasher.update(tx_str.as_bytes());
-            let hash = format!("0x{:x}", hasher.finalize());
-            if hash == tx_hash {
-                return Ok(Some((idx, tx)));
-            }
-        }
+// Transaction (for query by hash)
+pub fn save_transaction(db: &RocksDB, tx_hash: &str, tx: &Transaction) {
+    let key = format!("tx:{}", tx_hash);
+    let value = bincode::serialize(tx).unwrap();
+    db.lock().unwrap().put(key.as_bytes(), &value).unwrap();
+}
+
+pub fn get_transaction_by_hash(db: &RocksDB, tx_hash: &str) -> Option<Transaction> {
+    let key = format!("tx:{}", tx_hash);
+    if let Ok(Some(val)) = db.lock().unwrap().get(key.as_bytes()) {
+        bincode::deserialize(&val).ok()
+    } else {
+        None
     }
-    Ok(None)
 }
 
-pub fn init_mempool_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS mempool (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tx_json TEXT
-        );"
-    )
+// Mempool
+pub fn insert_mempool_tx(db: &RocksDB, tx_hash: &str, tx: &Transaction) {
+    let key = format!("mempool:{}", tx_hash);
+    let value = bincode::serialize(tx).unwrap();
+    db.lock().unwrap().put(key.as_bytes(), &value).unwrap();
 }
 
-pub fn insert_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
-    let tx_json = serde_json::to_string(tx).unwrap();
-    conn.execute(
-        "INSERT INTO mempool (tx_json) VALUES (?1)",
-        (tx_json,),
-    )?;
-    Ok(())
+pub fn remove_mempool_tx(db: &RocksDB, tx_hash: &str) {
+    let key = format!("mempool:{}", tx_hash);
+    db.lock().unwrap().delete(key.as_bytes()).unwrap();
 }
 
-pub fn remove_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
-    let tx_json = serde_json::to_string(tx).unwrap();
-    conn.execute(
-        "DELETE FROM mempool WHERE tx_json = ?1",
-        (tx_json,),
-    )?;
-    Ok(())
-}
-
-pub fn load_all_mempool_txs(conn: &Connection) -> Result<Vec<crate::transaction::Transaction>> {
-    let mut stmt = conn.prepare("SELECT tx_json FROM mempool")?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+pub fn load_all_mempool_txs(db: &RocksDB) -> Vec<Transaction> {
+    let db = db.lock().unwrap();
     let mut txs = Vec::new();
-    for row in rows {
-        if let Ok(json) = row {
-            if let Ok(tx) = serde_json::from_str(&json) {
-                txs.push(tx);
+    let iter = db.iterator(IteratorMode::Start);
+    for item in iter {
+        if let Ok((key, value)) = item {
+            if let Ok(k) = std::str::from_utf8(&key) {
+                if k.starts_with("mempool:") {
+                    if let Ok(tx) = bincode::deserialize::<crate::transaction::Transaction>(&value) {
+                        txs.push(tx);
+                    }
+                }
             }
         }
     }
-    Ok(txs)
+    txs
+}
+
+// Peers (存储为 peers:Vec<String>)
+pub fn save_peers(db: &RocksDB, peers: &Vec<String>) {
+    let key = b"peers";
+    let value = bincode::serialize(peers).unwrap();
+    db.lock().unwrap().put(key, &value).unwrap();
+}
+
+pub fn load_peers(db: &RocksDB) -> Vec<String> {
+    let key = b"peers";
+    if let Ok(Some(val)) = db.lock().unwrap().get(key) {
+        bincode::deserialize(&val).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
 }

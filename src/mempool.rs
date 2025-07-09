@@ -1,32 +1,38 @@
 use crate::transaction::Transaction;
-use rusqlite::Connection;
+use crate::storage::RocksDB;
 
 #[derive(Default)]
 pub struct Mempool {
-    pub pool: Vec<Transaction>,
+    pub txs: Vec<Transaction>,
 }
 
 impl Mempool {
-    pub fn add(&mut self, tx: Transaction, conn: Option<&Connection>) {
-        self.pool.push(tx.clone());
-        if let Some(conn) = conn {
-            let _ = crate::storage::insert_mempool_tx(conn, &tx);
-        }
+    pub fn new() -> Self {
+        Mempool { txs: Vec::new() }
     }
 
-    pub fn collect_for_block(&mut self, max: usize, conn: Option<&Connection>) -> Vec<Transaction> {
-        let txs: Vec<_> = self.pool.drain(..max.min(self.pool.len())).collect();
-        if let Some(conn) = conn {
-            for tx in &txs {
-                let _ = crate::storage::remove_mempool_tx(conn, tx);
-            }
+    pub fn add(&mut self, tx: Transaction, db: Option<&RocksDB>) {
+        if let Some(db) = db {
+            let tx_hash = tx.hash();
+            let _ = crate::storage::insert_mempool_tx(db, &tx_hash, &tx);
         }
-        txs
+        self.txs.push(tx);
     }
 
-    pub fn load_from_db(&mut self, conn: &Connection) {
-        if let Ok(txs) = crate::storage::load_all_mempool_txs(conn) {
-            self.pool = txs;
+    pub fn remove(&mut self, tx: &Transaction, db: Option<&RocksDB>) {
+        if let Some(db) = db {
+            let tx_hash = tx.hash();
+            let _ = crate::storage::remove_mempool_tx(db, &tx_hash);
         }
+        self.txs.retain(|t| t != tx);
+    }
+
+    pub fn load_from_db(&mut self, db: &RocksDB) {
+        self.txs = crate::storage::load_all_mempool_txs(db);
+    }
+
+    pub fn collect_for_block(&mut self, max: usize, _db: Option<&crate::storage::RocksDB>) -> Vec<crate::transaction::Transaction> {
+        let n = max.min(self.txs.len());
+        self.txs.drain(0..n).collect()
     }
 }
