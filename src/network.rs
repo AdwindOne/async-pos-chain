@@ -1,16 +1,15 @@
 use crate::block::Block;
 use crate::blockchain::Blockchain;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::sync::{Arc, Mutex};
-use serde_json;
+use crate::mempool::Mempool;
 use crate::peers::PeerManager;
 use crate::transaction::Transaction;
-use crate::mempool::Mempool;
 use rusqlite::Connection;
+use serde_json;
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
-pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
-    let data = serde_json::to_string(tx).unwrap();
+async fn send_data_to_peers(data: &str, peers: &PeerManager) {
     for addr in peers.list() {
         let addr = format!("{}", addr);
         if let Ok(mut stream) = TcpStream::connect(addr).await {
@@ -19,14 +18,14 @@ pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
     }
 }
 
+pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
+    let data = serde_json::to_string(tx).unwrap();
+    send_data_to_peers(&data, peers).await;
+}
+
 pub async fn broadcast_block(block: &Block, peers: &PeerManager) {
     let data = serde_json::to_string(block).unwrap();
-    for addr in peers.list() {
-        let addr = format!("{}", addr);
-        if let Ok(mut stream) = TcpStream::connect(addr).await {
-            let _ = stream.write_all(data.as_bytes()).await;
-        }
-    }
+    send_data_to_peers(&data, peers).await;
 }
 
 pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc<Mutex<Mempool>>) {
@@ -45,18 +44,25 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
                     // 网络自动发现：peers_request/peers_response
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
-                        if val.get("type") == Some(&serde_json::Value::String("peers_request".to_string())) {
+                        if val.get("type")
+                            == Some(&serde_json::Value::String("peers_request".to_string()))
+                        {
                             // 返回本地 peers
                             let peer_conn = Connection::open(&peer_db_path).unwrap();
-                            let peers = crate::peers::PeerManager::load_from_db(&peer_conn).unwrap_or_default();
+                            let peers = PeerManager::load_from_db(&peer_conn).unwrap_or_default();
                             let resp = serde_json::json!({"type": "peers_response", "peers": peers.list()});
-                            let _ = socket.write_all(serde_json::to_string(&resp).unwrap().as_bytes()).await;
+                            let _ = socket
+                                .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
+                                .await;
                             return;
                         }
-                        if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
+                        if val.get("type")
+                            == Some(&serde_json::Value::String("peers_response".to_string()))
+                        {
                             if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
                                 let peer_conn = Connection::open(&peer_db_path).unwrap();
-                                let mut peers = crate::peers::PeerManager::load_from_db(&peer_conn).unwrap_or_default();
+                                let mut peers =
+                                    PeerManager::load_from_db(&peer_conn).unwrap_or_default();
                                 for p in arr {
                                     if let Some(addr) = p.as_str() {
                                         peers.add_peer(addr.to_string());
@@ -89,21 +95,44 @@ pub async fn discover_peers(peers: &mut PeerManager) {
     for addr in peer_list {
         if let Ok(mut stream) = TcpStream::connect(&addr).await {
             let req = serde_json::json!({"type": "peers_request"});
-            let _ = stream.write_all(serde_json::to_string(&req).unwrap().as_bytes()).await;
-            let mut buf = [0; 2048];
-            if let Ok(n) = stream.read(&mut buf).await {
-                if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
-                        if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
-                            if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
-                                for p in arr {
-                                    if let Some(addr) = p.as_str() {
-                                        peers.add_peer(addr.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
+            let _ = stream
+                .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+                .await;
+            if let Err(e) = handle_stream(stream, peers).await {
+                eprintln!("Error handling stream: {}", e);
+            }
+        }
+    }
+}
+
+async fn handle_stream(
+    stream: TcpStream,
+    peers: &mut PeerManager,
+) -> Result<(), Box<dyn std::error::Error>> {
+    read_and_handle_json(stream, peers).await
+}
+
+async fn read_and_handle_json(
+    mut stream: TcpStream,
+    peers: &mut PeerManager,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut buf = [0; 2048];
+    if let Ok(n) = stream.read(&mut buf).await {
+        if let Ok(text) = std::str::from_utf8(&buf[..n]) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                handle_json_value(val, peers).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn handle_json_value(val: serde_json::Value, peers: &mut PeerManager) {
+    if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
+        if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
+            for p in arr {
+                if let Some(addr) = p.as_str() {
+                    peers.add_peer(addr.to_string());
                 }
             }
         }
