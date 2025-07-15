@@ -6,6 +6,25 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn jsonrpc_response(result: serde_json::Value, id: serde_json::Value) -> String {
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "result": result,
+        "id": id
+    });
+    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", resp.to_string().len(), resp.to_string())
+}
+
+fn jsonrpc_error(error: &str, id: Option<serde_json::Value>) -> String {
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "error": error,
+        "id": id.unwrap_or(serde_json::Value::Null)
+    });
+    format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", resp.to_string().len(), resp.to_string())
+}
+
+/// 启动 JSON-RPC 服务，监听端口，处理 send_transaction 方法
 pub async fn start_jsonrpc_server(port: u16, mempool: Arc<Mutex<Mempool>>, chain_db: storage::RocksDB) {
     println!("🚀 启动 JSON-RPC 服务，监听端口 {}", port);
     let listener = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
@@ -34,22 +53,23 @@ pub async fn start_jsonrpc_server(port: u16, mempool: Arc<Mutex<Mempool>>, chain
                                             let mut mempool = mempool.lock().unwrap();
                                             mempool.add(tx, Some(&chain_db));
                                         }
-                                        let resp = json!({
-                                            "jsonrpc": "2.0",
-                                            "result": {"status": "ok", "tx_hash": tx_hash},
-                                            "id": req.get("id").cloned().unwrap_or(json!(1))
-                                        });
-                                        let resp_str = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", resp.to_string().len(), resp.to_string());
-                                        let _ = socket.write_all(resp_str.as_bytes()).await;
+                                        let resp = jsonrpc_response(json!({"status": "ok", "tx_hash": tx_hash}), req.get("id").cloned().unwrap_or(json!(1)));
+                                        let _ = socket.write_all(resp.as_bytes()).await;
                                         return;
                                     }
                                 }
                             }
+                        } else {
+                            let resp = jsonrpc_error("invalid request", None);
+                            let _ = socket.write_all(resp.as_bytes()).await;
                         }
+                    } else {
+                        let resp = jsonrpc_error("invalid request", None);
+                        let _ = socket.write_all(resp.as_bytes()).await;
                     }
-                    let resp = json!({"jsonrpc":"2.0","error":"invalid request","id":null});
-                    let resp_str = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", resp.to_string().len(), resp.to_string());
-                    let _ = socket.write_all(resp_str.as_bytes()).await;
+                } else {
+                    let resp = jsonrpc_error("invalid request", None);
+                    let _ = socket.write_all(resp.as_bytes()).await;
                 }
             }
         });

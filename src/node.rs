@@ -23,20 +23,29 @@ pub async fn dispatch(cli: Cli, chain_db: storage::RocksDB, peers_db: storage::R
 }
 
 pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::RocksDB) {
-    // 初始化 admin 账户
-    storage::add_account(&chain_db, "admin", 1000000);
-    storage::add_account(&chain_db, "Alice", 100);
-    storage::add_account(&chain_db, "Bob", 100);
+    init_accounts(&chain_db);
+    let peers_arc = Arc::new(Mutex::new(PeerManager::load_from_db(&peers_db)));
+    let chain_arc = Arc::new(Mutex::new(recover_blockchain(&chain_db)));
+    let mempool_arc = Arc::new(Mutex::new(init_mempool(&chain_db)));
 
-    // 加载 peers
-    let peers = PeerManager::load_from_db(&peers_db);
-    let peers_arc = Arc::new(Mutex::new(peers));
+    spawn_block_producer(chain_arc.clone(), mempool_arc.clone(), peers_arc.clone(), chain_db.clone()).await;
+    spawn_jsonrpc(mempool_arc.clone(), chain_db.clone()).await;
+    spawn_peer_discovery(peers_arc.clone(), peers_db.clone()).await;
 
-    // 从数据库恢复区块链
+    network::start_server(port, chain_arc, mempool_arc).await;
+}
+
+fn init_accounts(chain_db: &storage::RocksDB) {
+    storage::add_account(chain_db, "admin", 1000000);
+    storage::add_account(chain_db, "Alice", 100);
+    storage::add_account(chain_db, "Bob", 100);
+}
+
+fn recover_blockchain(chain_db: &storage::RocksDB) -> Blockchain {
     let mut chain = Blockchain::new();
     let mut idx = 0u64;
     loop {
-        if let Some(block) = storage::get_block_by_index(&chain_db, idx) {
+        if let Some(block) = storage::get_block_by_index(chain_db, idx) {
             chain.chain.push(block);
             idx += 1;
         } else {
@@ -45,25 +54,32 @@ pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::
     }
     if chain.chain.is_empty() {
         chain.create_genesis_block();
-        storage::save_block(&chain_db, chain.chain.last().unwrap());
+        storage::save_block(chain_db, chain.chain.last().unwrap());
     }
+    chain
+}
 
+fn init_mempool(chain_db: &storage::RocksDB) -> Mempool {
     let mut mempool = Mempool::new();
-    mempool.load_from_db(&chain_db);
-    mempool.add(Transaction::new("Alice", "Bob", 10), Some(&chain_db));
-    mempool.add(Transaction::new("Bob", "Charlie", 5), Some(&chain_db));
+    mempool.load_from_db(chain_db);
+    mempool.add(Transaction::new("Alice", "Bob", 10), Some(chain_db));
+    mempool.add(Transaction::new("Bob", "Charlie", 5), Some(chain_db));
+    mempool
+}
 
-    // 启动持续出块任务
-    let chain_arc = Arc::new(Mutex::new(chain));
-    let mempool_arc = Arc::new(Mutex::new(mempool));
-    let peers_for_task = Arc::clone(&peers_arc);
+async fn spawn_block_producer(
+    chain_arc: Arc<Mutex<Blockchain>>,
+    mempool_arc: Arc<Mutex<Mempool>>,
+    peers_arc: Arc<Mutex<PeerManager>>,
+    chain_db: storage::RocksDB,
+) {
     let chain_for_task = Arc::clone(&chain_arc);
     let mempool_for_task = Arc::clone(&mempool_arc);
-    let chain_db_for_task = Arc::clone(&chain_db);
+    let peers_for_task = Arc::clone(&peers_arc);
+    let chain_db_for_task = chain_db.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            // 每3秒都出块（即使没有交易）
             let txs = {
                 let mut mempool = mempool_for_task.lock().unwrap();
                 mempool.collect_for_block(10, Some(&chain_db_for_task))
@@ -75,7 +91,6 @@ pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::
                 let proposer = block.proposer.clone();
                 (block, proposer)
             };
-            // 处理区块内所有交易的余额
             {
                 for tx in &block.transactions {
                     let from_balance = storage::get_balance(&chain_db_for_task, &tx.from);
@@ -85,19 +100,13 @@ pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::
                         storage::set_balance(&chain_db_for_task, &tx.to, to_balance + tx.amount);
                     }
                 }
-                // 出块奖励给 proposer
                 let reward = 50;
                 let proposer_balance = storage::get_balance(&chain_db_for_task, &proposer);
                 storage::set_balance(&chain_db_for_task, &proposer, proposer_balance + reward);
                 storage::save_block(&chain_db_for_task, &block);
             }
             println!("[⛓️ 出块] 高度: {} | Hash: {} | 提议者: {} | 交易数: {}", block.index, block.hash, block.proposer, block.transactions.len());
-            println!("📊 账户余额：");
-            for addr in &["admin", "Alice", "Bob", "Charlie"] {
-                let balance = storage::get_balance(&chain_db_for_task, addr);
-                println!(" - {}: {}", addr, balance);
-            }
-            // 广播新出块
+            print_account_balances(&chain_db_for_task, &["admin", "Alice", "Bob", "Charlie"]);
             let peer_list = {
                 let peers = peers_for_task.lock().unwrap();
                 peers.list()
@@ -105,17 +114,19 @@ pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::
             network::broadcast_block(&block, &PeerManager { peers: peer_list }).await;
         }
     });
+}
 
-    // 启动 JSON-RPC 服务（端口8545）
-    let mempool_for_rpc = Arc::clone(&mempool_arc);
-    let chain_db_for_rpc = Arc::clone(&chain_db);
+async fn spawn_jsonrpc(mempool: Arc<Mutex<Mempool>>, chain_db: storage::RocksDB) {
+    let mempool_for_rpc = Arc::clone(&mempool);
+    let chain_db_for_rpc = chain_db.clone();
     tokio::spawn(async move {
         rpc::start_jsonrpc_server(8545, mempool_for_rpc, chain_db_for_rpc).await;
     });
+}
 
-    // 启动节点发现
+async fn spawn_peer_discovery(peers_arc: Arc<Mutex<PeerManager>>, peers_db: storage::RocksDB) {
     let peers_for_discover = Arc::clone(&peers_arc);
-    let peers_db_for_discover = Arc::clone(&peers_db);
+    let peers_db_for_discover = peers_db.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -160,9 +171,8 @@ pub async fn run_node(port: u16, chain_db: storage::RocksDB, peers_db: storage::
             peers.save_to_db(&peers_db_for_discover);
         }
     });
-
-    network::start_server(port, chain_arc, mempool_arc).await;
 }
+
 
 pub async fn submit_tx(from: String, to: String, amount: u64, chain_db: storage::RocksDB, peers_db: storage::RocksDB) {
     let tx = Transaction::new(&from, &to, amount);
@@ -177,12 +187,7 @@ pub async fn submit_tx(from: String, to: String, amount: u64, chain_db: storage:
 pub fn query_block(index: u64, chain_db: storage::RocksDB) {
     match storage::get_block_by_index(&chain_db, index) {
         Some(block) => {
-            println!("区块高度: {}", block.index);
-            println!("Hash: {}", block.hash);
-            println!("前置Hash: {}", block.previous_hash);
-            println!("提议者: {}", block.proposer);
-            println!("时间戳: {}", block.timestamp);
-            println!("交易: {:?}", block.transactions);
+            print_block(&block);
         }
         None => println!("未找到该高度区块"),
     }
@@ -214,9 +219,30 @@ pub async fn spawn_jsonrpc_server(port: u16, chain_db: storage::RocksDB) {
 pub fn query_tx(hash: String, chain_db: storage::RocksDB) {
     match storage::get_transaction_by_hash(&chain_db, &hash) {
         Some(tx) => {
-            println!("交易哈希: {}", hash);
-            println!("交易详情: from: {} -> to: {} amount: {}", tx.from, tx.to, tx.amount);
+            print_transaction(&hash, &tx);
         }
         None => println!("未找到该交易"),
     }
+}
+
+fn print_account_balances(chain_db: &storage::RocksDB, addrs: &[&str]) {
+    println!("📊 账户余额：");
+    for addr in addrs {
+        let balance = storage::get_balance(chain_db, addr);
+        println!(" - {}: {}", addr, balance);
+    }
+}
+
+fn print_block(block: &crate::block::Block) {
+    println!("区块高度: {}", block.index);
+    println!("Hash: {}", block.hash);
+    println!("前置Hash: {}", block.previous_hash);
+    println!("提议者: {}", block.proposer);
+    println!("时间戳: {}", block.timestamp);
+    println!("交易: {:?}", block.transactions);
+}
+
+fn print_transaction(hash: &str, tx: &crate::transaction::Transaction) {
+    println!("交易哈希: {}", hash);
+    println!("交易详情: from: {} -> to: {} amount: {}", tx.from, tx.to, tx.amount);
 } 

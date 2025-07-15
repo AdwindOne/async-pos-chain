@@ -8,6 +8,7 @@ use crate::peers::PeerManager;
 use crate::transaction::Transaction;
 use crate::mempool::Mempool;
 
+/// 广播交易到所有已知节点
 pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
     let data = serde_json::to_string(tx).unwrap();
     for addr in peers.peers.clone() {
@@ -18,6 +19,7 @@ pub async fn broadcast_transaction(tx: &Transaction, peers: &PeerManager) {
     }
 }
 
+/// 广播区块到所有已知节点
 pub async fn broadcast_block(block: &Block, peers: &PeerManager) {
     let data = serde_json::to_string(block).unwrap();
     for addr in peers.peers.clone() {
@@ -28,6 +30,26 @@ pub async fn broadcast_block(block: &Block, peers: &PeerManager) {
     }
 }
 
+async fn handle_peers_request(socket: &mut tokio::net::TcpStream, peer_db: &crate::storage::RocksDB) {
+    let peers = crate::peers::PeerManager::load_from_db(peer_db);
+    let resp = serde_json::json!({"type": "peers_response", "peers": peers.peers.clone()});
+    let resp_str = serde_json::to_string(&resp).unwrap();
+    let _ = socket.write_all(resp_str.as_bytes()).await;
+}
+
+fn handle_peers_response(val: &serde_json::Value, peer_db: &crate::storage::RocksDB) {
+    if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
+        let mut peers = crate::peers::PeerManager::load_from_db(peer_db);
+        for p in arr {
+            if let Some(addr) = p.as_str() {
+                peers.add_peer(addr.to_string());
+            }
+        }
+        peers.save_to_db(peer_db);
+    }
+}
+
+/// 启动网络服务监听，处理区块、交易、节点发现等消息
 pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc<Mutex<Mempool>>) {
     let listener = TcpListener::bind(("0.0.0.0", port)).await.unwrap();
     println!("🌐 监听地址: 0.0.0.0:{}", port);
@@ -42,25 +64,15 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
             let mut buf = [0; 1024];
             if let Ok(n) = socket.read(&mut buf).await {
                 if let Ok(text) = std::str::from_utf8(&buf[..n]) {
-                    // 网络自动发现：peers_request/peers_response
+                    // 网络自动发现: peers_request/peers_response
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
                         if val.get("type") == Some(&serde_json::Value::String("peers_request".to_string())) {
                             // 返回本地 peers
-                            let peers = crate::peers::PeerManager::load_from_db(&peer_db);
-                            let resp = serde_json::json!({"type": "peers_response", "peers": peers.peers.clone()});
-                            let _ = socket.write_all(serde_json::to_string(&resp).unwrap().as_bytes()).await;
+                            handle_peers_request(&mut socket, &peer_db).await;
                             return;
                         }
                         if val.get("type") == Some(&serde_json::Value::String("peers_response".to_string())) {
-                            if let Some(arr) = val.get("peers").and_then(|v| v.as_array()) {
-                                let mut peers = crate::peers::PeerManager::load_from_db(&peer_db);
-                                for p in arr {
-                                    if let Some(addr) = p.as_str() {
-                                        peers.add_peer(addr.to_string());
-                                    }
-                                }
-                                peers.save_to_db(&peer_db);
-                            }
+                            handle_peers_response(&val, &peer_db);
                             return;
                         }
                     }
@@ -82,6 +94,7 @@ pub async fn start_server(port: u16, chain: Arc<Mutex<Blockchain>>, mempool: Arc
 }
 
 #[allow(dead_code)]
+/// 主动发现并同步节点列表
 pub async fn discover_peers(peers: &mut PeerManager) {
     let peer_list = peers.peers.clone();
     for addr in peer_list {
