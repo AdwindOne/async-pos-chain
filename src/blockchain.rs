@@ -1,9 +1,9 @@
-use crate::block;
 use crate::account;
+use crate::block;
 use crate::transaction;
+use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use rand::seq::IteratorRandom;
 
 #[derive(Clone)]
 pub struct Blockchain {
@@ -30,7 +30,10 @@ impl Blockchain {
     }
 
     pub fn get_last_hash(&self) -> String {
-        self.chain.last().map(|b| b.hash.clone()).unwrap_or_else(|| "0".to_string())
+        self.chain
+            .last()
+            .map(|b| b.hash.clone())
+            .unwrap_or_else(|| "0".to_string())
     }
 
     pub fn select_proposer(&self) -> String {
@@ -50,7 +53,12 @@ impl Blockchain {
             self.state.apply_transaction(&tx.from, &tx.to, tx.amount);
         }
 
-        let block = block::Block::new(self.chain.len() as u64, self.get_last_hash(), txs, proposer.clone());
+        let block = block::Block::new(
+            self.chain.len() as u64,
+            self.get_last_hash(),
+            txs,
+            proposer.clone(),
+        );
 
         *self.validators.entry(proposer.clone()).or_insert(0) += 10;
 

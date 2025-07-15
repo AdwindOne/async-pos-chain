@@ -1,8 +1,8 @@
+use crate::transaction::Transaction;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use crate::transaction::Transaction;
-use sha2::{Digest, Sha256};
 
 pub async fn start_jsonrpc_server(port: u16) {
     println!("🚀 启动 JSON-RPC 服务，监听端口 {}", port);
@@ -48,13 +48,13 @@ fn handle_jsonrpc_body(body: &str) -> (&'static str, serde_json::Value) {
                 "send_transaction" => handle_send_transaction(&req),
                 _ => (
                     "400 Bad Request",
-                    json!({"jsonrpc":"2.0","error":"unknown method","id":req.get("id").cloned().unwrap_or(json!(1))})
+                    json!({"jsonrpc":"2.0","error":"unknown method","id":req.get("id").cloned().unwrap_or(json!(1))}),
                 ),
             }
         }
         Err(_) => (
             "400 Bad Request",
-            json!({"jsonrpc":"2.0","error":"invalid request","id":null})
+            json!({"jsonrpc":"2.0","error":"invalid request","id":null}),
         ),
     }
 }
@@ -82,6 +82,6 @@ fn handle_send_transaction(req: &serde_json::Value) -> (&'static str, serde_json
     }
     (
         "400 Bad Request",
-        json!({"jsonrpc":"2.0","error":"invalid params","id":req.get("id").cloned().unwrap_or(json!(1))})
+        json!({"jsonrpc":"2.0","error":"invalid params","id":req.get("id").cloned().unwrap_or(json!(1))}),
     )
-} 
+}

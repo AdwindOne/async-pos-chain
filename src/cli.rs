@@ -29,7 +29,9 @@ pub enum Command {
         addr: String,
     },
     QueryPeers,
-    JsonRpcServer { port: u16 },
+    JsonRpcServer {
+        port: u16,
+    },
     QueryTx {
         hash: String,
     },
@@ -37,4 +39,4 @@ pub enum Command {
 
 pub fn parse_cli() -> Cli {
     Cli::parse()
-} 
+}

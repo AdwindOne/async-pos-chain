@@ -1,7 +1,7 @@
 use crate::block::Block;
 use crate::transaction::Transaction;
-use rusqlite::{Connection, params};
 use rusqlite::Result;
+use rusqlite::{params, Connection};
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -15,7 +15,7 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             timestamp INTEGER,
             transactions TEXT
         );
-        "
+        ",
     )
 }
 
@@ -64,7 +64,7 @@ pub fn init_account_table(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS accounts (
             address TEXT PRIMARY KEY,
             balance INTEGER
-        );"
+        );",
     )
 }
 
@@ -95,10 +95,13 @@ pub fn set_balance(conn: &Connection, address: &str, balance: u64) -> Result<()>
     Ok(())
 }
 
-pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Option<(u64, Transaction)>> {
+pub fn get_transaction_by_hash(
+    conn: &Connection,
+    tx_hash: &str,
+) -> Result<Option<(u64, Transaction)>> {
     let mut stmt = conn.prepare("SELECT idx, transactions FROM blocks")?;
     let mut rows = stmt.query([])?;
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     while let Some(row) = rows.next()? {
         let idx: u64 = row.get(0)?;
         let tx_json: String = row.get(1)?;
@@ -122,25 +125,19 @@ pub fn init_mempool_table(conn: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS mempool (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tx_json TEXT
-        );"
+        );",
     )
 }
 
 pub fn insert_mempool_tx(conn: &Connection, tx: &Transaction) -> Result<()> {
     let tx_json = serde_json::to_string(tx).unwrap();
-    conn.execute(
-        "INSERT INTO mempool (tx_json) VALUES (?1)",
-        (tx_json,),
-    )?;
+    conn.execute("INSERT INTO mempool (tx_json) VALUES (?1)", (tx_json,))?;
     Ok(())
 }
 
 pub fn remove_mempool_tx(conn: &Connection, tx: &Transaction) -> Result<()> {
     let tx_json = serde_json::to_string(tx).unwrap();
-    conn.execute(
-        "DELETE FROM mempool WHERE tx_json = ?1",
-        (tx_json,),
-    )?;
+    conn.execute("DELETE FROM mempool WHERE tx_json = ?1", (tx_json,))?;
     Ok(())
 }
 

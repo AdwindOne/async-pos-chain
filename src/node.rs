@@ -1,11 +1,11 @@
 use crate::blockchain::Blockchain;
 use crate::mempool::Mempool;
+use crate::network;
 use crate::peers::PeerManager;
 use crate::storage;
 use crate::transaction::Transaction;
-use crate::network;
-use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 
 tokio::task_local! {
@@ -134,7 +134,9 @@ fn print_block_info(block: &crate::block::Block) {
 fn print_account_balances(conn_arc: &Arc<Mutex<Connection>>) {
     println!("📊 账户余额：");
     let conn = conn_arc.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT address, balance FROM accounts").unwrap();
+    let mut stmt = conn
+        .prepare("SELECT address, balance FROM accounts")
+        .unwrap();
     let mut rows = stmt.query([]).unwrap();
     while let Some(row) = rows.next().unwrap() {
         let address: String = row.get(0).unwrap();
@@ -250,4 +252,4 @@ pub fn query_tx(hash: String) {
         Ok(None) => println!("未找到该交易"),
         Err(e) => println!("查询出错: {}", e),
     }
-} 
+}

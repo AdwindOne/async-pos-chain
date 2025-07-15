@@ -1,6 +1,6 @@
 use crate::transaction::Transaction;
-use serde::{Serialize, Deserialize};
-use sha2::{Sha256, Digest};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
@@ -13,7 +13,12 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(index: u64, previous_hash: String, transactions: Vec<Transaction>, proposer: String) -> Self {
+    pub fn new(
+        index: u64,
+        previous_hash: String,
+        transactions: Vec<Transaction>,
+        proposer: String,
+    ) -> Self {
         let timestamp = chrono::Utc::now().timestamp() as u64;
         let mut block = Block {
             index,

@@ -1,14 +1,14 @@
-mod cli;
-mod node;
-mod rpc;
+mod account;
+mod block;
 mod blockchain;
+mod cli;
 mod mempool;
+mod network;
+mod node;
 mod peers;
+mod rpc;
 mod storage;
 mod transaction;
-mod network;
-mod block;
-mod account;
 
 #[tokio::main]
 async fn main() {
