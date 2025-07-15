@@ -8,18 +8,44 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use tokio::io::AsyncWriteExt;
 
+tokio::task_local! {
+    static NODE_LOG: String;
+}
+
 pub async fn run_node(port: u16) {
     println!("🚀 启动 PoS 节点，监听端口 {}", port);
+    let conn_arc = Arc::new(Mutex::new(init_db_and_accounts()));
+    let _peers_arc = Arc::new(Mutex::new(load_peers()));
+    let chain_arc = Arc::new(Mutex::new(load_blockchain(&conn_arc)));
+    let mempool_arc = Arc::new(Mutex::new(load_mempool(&conn_arc)));
+
+    spawn_block_producer(
+        Arc::clone(&chain_arc),
+        Arc::clone(&mempool_arc),
+        Arc::clone(&_peers_arc),
+        Arc::clone(&conn_arc),
+    );
+    spawn_jsonrpc_server();
+    spawn_peer_discovery(Arc::clone(&_peers_arc));
+    network::start_server(port, chain_arc, mempool_arc).await;
+}
+
+fn init_db_and_accounts() -> Connection {
     let conn = Connection::open("chain.db").unwrap();
     storage::init_db(&conn).unwrap();
     storage::init_account_table(&conn).unwrap();
     storage::add_account(&conn, "admin", 1000000).unwrap();
     storage::add_account(&conn, "Alice", 100).unwrap();
     storage::add_account(&conn, "Bob", 100).unwrap();
-    let conn_arc = Arc::new(Mutex::new(conn));
+    conn
+}
+
+fn load_peers() -> PeerManager {
     let peer_conn = Connection::open("peers.db").unwrap();
-    let peers = PeerManager::load_from_db(&peer_conn).unwrap_or_default();
-    let _peers_arc = Arc::new(Mutex::new(peers));
+    PeerManager::load_from_db(&peer_conn).unwrap_or_default()
+}
+
+fn load_blockchain(conn_arc: &Arc<Mutex<Connection>>) -> Blockchain {
     let mut chain = Blockchain::new();
     let conn = conn_arc.lock().unwrap();
     let mut idx = 0u64;
@@ -36,39 +62,41 @@ pub async fn run_node(port: u16) {
         chain.create_genesis_block();
         storage::save_block(&conn, chain.chain.last().unwrap()).unwrap();
     }
-    drop(conn);
+    chain
+}
+
+fn load_mempool(conn_arc: &Arc<Mutex<Connection>>) -> Mempool {
     let mut mempool = Mempool::default();
-    {
-        let conn = conn_arc.lock().unwrap();
-        mempool.load_from_db(&conn);
-    }
-    mempool.add(Transaction::new("Alice", "Bob", 10), Some(&conn_arc.lock().unwrap()));
-    mempool.add(Transaction::new("Bob", "Charlie", 5), Some(&conn_arc.lock().unwrap()));
-    let peers = PeerManager::default();
-    let _peers_arc = Arc::new(Mutex::new(peers));
-    let chain_arc = Arc::new(Mutex::new(chain));
-    let mempool_arc = Arc::new(Mutex::new(mempool));
-    let peers_for_task: Arc<Mutex<PeerManager>> = Arc::clone(&_peers_arc);
-    let chain_for_task: Arc<Mutex<Blockchain>> = Arc::clone(&chain_arc);
-    let mempool_for_task: Arc<Mutex<Mempool>> = Arc::clone(&mempool_arc);
-    let conn_for_task: Arc<Mutex<Connection>> = Arc::clone(&conn_arc);
+    let conn = conn_arc.lock().unwrap();
+    mempool.load_from_db(&conn);
+    mempool.add(Transaction::new("Alice", "Bob", 10), Some(&conn));
+    mempool.add(Transaction::new("Bob", "Charlie", 5), Some(&conn));
+    mempool
+}
+
+fn spawn_block_producer(
+    chain_arc: Arc<Mutex<Blockchain>>,
+    mempool_arc: Arc<Mutex<Mempool>>,
+    peers_arc: Arc<Mutex<PeerManager>>,
+    conn_arc: Arc<Mutex<Connection>>,
+) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let txs = {
-                let mut mempool = mempool_for_task.lock().unwrap();
-                let conn = conn_for_task.lock().unwrap();
+                let mut mempool = mempool_arc.lock().unwrap();
+                let conn = conn_arc.lock().unwrap();
                 mempool.collect_for_block(10, Some(&conn))
             };
             let (block, proposer) = {
-                let mut chain = chain_for_task.lock().unwrap();
+                let mut chain = chain_arc.lock().unwrap();
                 chain.add_block(txs.clone());
                 let block = chain.chain.last().unwrap().clone();
                 let proposer = block.proposer.clone();
                 (block, proposer)
             };
             {
-                let conn = conn_for_task.lock().unwrap();
+                let conn = conn_arc.lock().unwrap();
                 for tx in &block.transactions {
                     let from_balance = storage::get_balance(&conn, &tx.from).unwrap_or(0);
                     if from_balance >= tx.amount {
@@ -82,47 +110,58 @@ pub async fn run_node(port: u16) {
                 storage::set_balance(&conn, &proposer, proposer_balance + reward).unwrap();
                 storage::save_block(&conn, &block).unwrap();
             }
-            println!(
-                "[⛓️ 出块] 高度: {} | Hash: {} | 提议者: {} | 交易数: {}",
-                block.index,
-                block.hash,
-                block.proposer,
-                block.transactions.len()
-            );
-            println!("📊 账户余额：");
-            {
-                let conn = conn_for_task.lock().unwrap();
-                let mut stmt = conn.prepare("SELECT address, balance FROM accounts").unwrap();
-                let mut rows = stmt.query([]).unwrap();
-                while let Some(row) = rows.next().unwrap() {
-                    let address: String = row.get(0).unwrap();
-                    let balance: u64 = row.get(1).unwrap();
-                    println!(" - {}: {}", address, balance);
-                }
-            }
+            print_block_info(&block);
+            print_account_balances(&conn_arc);
             let peer_list = {
-                let peers = peers_for_task.lock().unwrap();
+                let peers = peers_arc.lock().unwrap();
                 peers.list()
             };
             network::broadcast_block(&block, &PeerManager { peers: peer_list }).await;
         }
     });
+}
+
+fn print_block_info(block: &crate::block::Block) {
+    println!(
+        "[⛓️ 出块] 高度: {} | Hash: {} | 提议者: {} | 交易数: {}",
+        block.index,
+        block.hash,
+        block.proposer,
+        block.transactions.len()
+    );
+}
+
+fn print_account_balances(conn_arc: &Arc<Mutex<Connection>>) {
+    println!("📊 账户余额：");
+    let conn = conn_arc.lock().unwrap();
+    let mut stmt = conn.prepare("SELECT address, balance FROM accounts").unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        let address: String = row.get(0).unwrap();
+        let balance: u64 = row.get(1).unwrap();
+        println!(" - {}: {}", address, balance);
+    }
+}
+
+fn spawn_jsonrpc_server() {
     tokio::spawn(async move {
         crate::rpc::start_jsonrpc_server(8545).await;
     });
-    let peers_for_discover: Arc<Mutex<PeerManager>> = Arc::clone(&_peers_arc);
+}
+
+fn spawn_peer_discovery(peers_arc: Arc<Mutex<PeerManager>>) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             let peer_list = {
-                let peers = peers_for_discover.lock().unwrap();
+                let peers = peers_arc.lock().unwrap();
                 peers.list()
             };
             let mut discovered = PeerManager::default();
             for _ in peer_list {
                 network::discover_peers(&mut discovered).await;
             }
-            let mut peers = peers_for_discover.lock().unwrap();
+            let mut peers = peers_arc.lock().unwrap();
             let before = peers.list().len();
             for addr in discovered.list() {
                 peers.add_peer(addr);
@@ -141,7 +180,6 @@ pub async fn run_node(port: u16) {
             let _ = peers.save_to_db(&peer_conn);
         }
     });
-    network::start_server(port, chain_arc, mempool_arc).await;
 }
 
 pub async fn submit_tx(from: String, to: String, amount: u64) {
