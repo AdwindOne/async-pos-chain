@@ -1,15 +1,16 @@
-use crate::account;
-use crate::block;
+use crate::block::block;
 use crate::transaction;
 use rand::seq::IteratorRandom;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use crate::accounts::account::AccountState;
+// 如果 crate::accounts::account::AccountState 无法导入，直接将 AccountState 相关定义复制到本文件顶部，或在 main.rs 添加 mod accounts { pub mod account; }。
 
 #[derive(Clone)]
 pub struct Blockchain {
     pub chain: Vec<block::Block>,
     pub validators: HashMap<String, u64>,
-    pub state: account::AccountState,
+    pub state: AccountState,
 }
 
 impl Blockchain {
@@ -17,7 +18,7 @@ impl Blockchain {
         let mut bc = Blockchain {
             chain: vec![],
             validators: HashMap::new(),
-            state: account::AccountState::new(),
+            state: AccountState::new(),
         };
         bc.validators.insert("Alice".into(), 100);
         bc.validators.insert("Bob".into(), 50);

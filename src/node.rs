@@ -1,4 +1,5 @@
 use crate::blockchain::Blockchain;
+use crate::block::block::Block;
 use crate::mempool::Mempool;
 use crate::network;
 use crate::peers::PeerManager;
@@ -121,7 +122,7 @@ fn spawn_block_producer(
     });
 }
 
-fn print_block_info(block: &crate::block::Block) {
+fn print_block_info(block: &Block) {
     println!(
         "[⛓️ 出块] 高度: {} | Hash: {} | 提议者: {} | 交易数: {}",
         block.index,

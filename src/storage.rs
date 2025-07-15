@@ -1,4 +1,4 @@
-use crate::block::Block;
+use crate::block::block::Block;
 use crate::transaction::Transaction;
 use rusqlite::Result;
 use rusqlite::{params, Connection};

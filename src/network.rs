@@ -1,4 +1,4 @@
-use crate::block::Block;
+use crate::block::block::Block;
 use crate::blockchain::Blockchain;
 use crate::mempool::Mempool;
 use crate::peers::PeerManager;
