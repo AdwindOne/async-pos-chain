@@ -13,7 +13,7 @@ async fn send_data_to_peers(data: &str, peers: &PeerManager) {
     for addr in peers.list() {
         let addr = format!("{}", addr);
         if let Ok(mut stream) = TcpStream::connect(addr).await {
-            let _ = stream.write_all(data.as_bytes()).await;
+            let _ = stream.write_all(data.as_bytes());
         }
     }
 }

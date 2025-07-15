@@ -22,7 +22,6 @@ use storage::{
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use transaction::Transaction;
-
 #[derive(Parser)]
 #[command(name = "PoS Chain")]
 #[command(about = "A minimal async PoS blockchain", long_about = None)]
