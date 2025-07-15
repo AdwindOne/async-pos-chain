@@ -17,7 +17,7 @@ A simple async proof-of-stake blockchain written in Rust.
 ### Start Node and JSON-RPC Server
 
 ```sh
-cargo run -- run --port 8000
+ cargo run -- run 8000
 ```
 - Starts both the PoS node (port 8000) and the JSON-RPC server (port 8545).
 - You can submit transactions via CLI or JSON-RPC at the same time.
@@ -25,25 +25,25 @@ cargo run -- run --port 8000
 ### Submit a Transaction (CLI)
 
 ```sh
-cargo run -- submit --from Alice --to Bob --amount 200
+cargo run -- submit Alice Bob 200
 ```
 
 ### Query a Block by Height
 
 ```sh
-cargo run -- query --index 2
+cargo run -- query 2
 ```
 
 ### Query Account Balance
 
 ```sh
-cargo run -- query-balance --address Alice
+cargo run -- query-balance Alice
 ```
 
 ### Add a Peer Node
 
 ```sh
-cargo run -- add-peer --addr 127.0.0.1:8001
+cargo run -- add-peer 127.0.0.1:8001
 ```
 - All added peers are saved in `peers.db` and loaded automatically on node startup.
 
@@ -57,7 +57,7 @@ cargo run -- query-peers
 ### Query Transaction by Hash
 
 ```sh
-cargo run -- query-tx --hash 0x1234abcd...
+cargo run -- query-tx 0x0d58832a0fc20b0833cb9659bd5dd166af89159772955d4440a200b080eca7a7
 ```
 - Returns transaction details and the block height it was included in.
 
@@ -66,7 +66,7 @@ cargo run -- query-tx --hash 0x1234abcd...
 Start the JSON-RPC server (already started with `run`):
 
 ```sh
-cargo run -- run --port 8000
+cargo run -- run 8000
 ```
 
 Send a transaction via curl:
@@ -80,8 +80,8 @@ curl -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' -d '{"jso
 
 1. Start several nodes on different ports:
    ```sh
-   cargo run -- run --port 8000
-   cargo run -- run --port 8001
+   cargo run -- run 8000
+   cargo run -- run 8001
    ```
 2. Add peers to each node:
    ```sh

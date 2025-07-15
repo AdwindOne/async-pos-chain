@@ -1,6 +1,7 @@
 use crate::block::Block;
-use rusqlite::{Connection, Result};
-use rusqlite::params;
+use crate::transaction::Transaction;
+use rusqlite::{Connection, params};
+use rusqlite::Result;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -44,7 +45,7 @@ pub fn get_block_by_index(conn: &Connection, idx: u64) -> Result<Option<Block>> 
         let proposer: String = row.get(3)?;
         let timestamp: u64 = row.get(4)?;
         let tx_json: String = row.get(5)?;
-        let transactions: Vec<crate::transaction::Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
+        let transactions: Vec<Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
         Ok(Some(Block {
             index,
             hash,
@@ -94,14 +95,14 @@ pub fn set_balance(conn: &Connection, address: &str, balance: u64) -> Result<()>
     Ok(())
 }
 
-pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Option<(u64, crate::transaction::Transaction)>> {
+pub fn get_transaction_by_hash(conn: &Connection, tx_hash: &str) -> Result<Option<(u64, Transaction)>> {
     let mut stmt = conn.prepare("SELECT idx, transactions FROM blocks")?;
     let mut rows = stmt.query([])?;
     use sha2::{Sha256, Digest};
     while let Some(row) = rows.next()? {
         let idx: u64 = row.get(0)?;
         let tx_json: String = row.get(1)?;
-        let txs: Vec<crate::transaction::Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
+        let txs: Vec<Transaction> = serde_json::from_str(&tx_json).unwrap_or_default();
         for tx in txs {
             let tx_str = format!("{}{}{}", tx.from, tx.to, tx.amount);
             let mut hasher = Sha256::new();
@@ -125,7 +126,7 @@ pub fn init_mempool_table(conn: &Connection) -> Result<()> {
     )
 }
 
-pub fn insert_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
+pub fn insert_mempool_tx(conn: &Connection, tx: &Transaction) -> Result<()> {
     let tx_json = serde_json::to_string(tx).unwrap();
     conn.execute(
         "INSERT INTO mempool (tx_json) VALUES (?1)",
@@ -134,7 +135,7 @@ pub fn insert_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction
     Ok(())
 }
 
-pub fn remove_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction) -> Result<()> {
+pub fn remove_mempool_tx(conn: &Connection, tx: &Transaction) -> Result<()> {
     let tx_json = serde_json::to_string(tx).unwrap();
     conn.execute(
         "DELETE FROM mempool WHERE tx_json = ?1",
@@ -143,7 +144,7 @@ pub fn remove_mempool_tx(conn: &Connection, tx: &crate::transaction::Transaction
     Ok(())
 }
 
-pub fn load_all_mempool_txs(conn: &Connection) -> Result<Vec<crate::transaction::Transaction>> {
+pub fn load_all_mempool_txs(conn: &Connection) -> Result<Vec<Transaction>> {
     let mut stmt = conn.prepare("SELECT tx_json FROM mempool")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut txs = Vec::new();

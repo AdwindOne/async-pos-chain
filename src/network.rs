@@ -4,10 +4,9 @@ use crate::mempool::Mempool;
 use crate::peers::PeerManager;
 use crate::transaction::Transaction;
 use rusqlite::Connection;
-use serde_json;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn send_data_to_peers(data: &str, peers: &PeerManager) {
     for addr in peers.list() {
